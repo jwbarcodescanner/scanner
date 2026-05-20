@@ -197,21 +197,17 @@
       resultDiv.style.display = 'none';
       startBtn.style.display = 'none';
 
-      qrboxFunction = function(viewfinderWidth, viewfinderHeight) {
-        let minEdgePercentage = 0.7; // 70%
-        let minEdgeSize = Math.min(viewfinderWidth, viewfinderHeight);
-        let qrboxSize = Math.floor(minEdgeSize * minEdgePercentage);
-        return {
-            width: qrboxSize,
-            height: qrboxSize
-        };
-      }
-
-      
       html5QrcodeScanner = new Html5QrcodeScanner(
         "reader", 
         { 
-          fps: 10, qrbox: qrboxFunction
+          fps: 10, 
+          // Instead of hardcoding, calculate based on screen/video dimensions
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            // Make the scanning box 90% as wide as the camera feed
+            const boxWidth = Math.floor(viewfinderWidth * 0.9);
+            // Make the height exactly 50% of the width (creates a rectangle)
+            const boxHeight = Math.floor(boxWidth * 0.5);
+            return { width: boxWidth, height: boxHeight };
           }
         }, 
         false
