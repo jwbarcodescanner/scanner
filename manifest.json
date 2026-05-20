@@ -1,5 +1,5 @@
 {
-  "name": "Offline Barcode Scanner",
+  "name": "Product Barcode Scanner",
   "short_name": "Barcode Scanner",
   "start_url": "./index.html",
   "display": "standalone",
