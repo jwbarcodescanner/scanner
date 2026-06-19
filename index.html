@@ -3,14 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Product Barcode Scanner</title>
+  <title>Produict Barcode Scanner</title>
   
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   
   <link rel="manifest" href="manifest.json">
+  
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <script src="https://unpkg.com/papaparse" type="text/javascript"></script>
+  <script src="https://unpkg.com/xlsx" type="text/javascript"></script>
+  
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 20px; margin: 0; background-color: #f4f4f9; }
     h1 { font-size: 24px; color: #333; margin-bottom: 5px; }
@@ -30,12 +34,13 @@
 </head>
 <body>
 
-  <h1>Product Barcode Scanner</h1>
+  <h1>Offline Scanner</h1>
 
   <div class="card" id="setup-section">
-    <h3>1. Load Data</h3>
-    <input type="text" id="data-url" placeholder="URL of HTML page" value="https://docs.google.com/spreadsheets/d/1n9RIG4OF4Xzh8FF5rvBLXgxGt6FTxNhXg4SpFMEX2Sg/gviz/tq?tqx=out:html&gid=0&headers=1&tq=select%20*">
-    <button id="load-data" class="btn-secondary">Download & Save Offline</button>
+    <h3>1. Setup & Load Data</h3>
+    <p style="font-size: 14px;">Enter the URL of your Configuration JSON file.</p>
+    <input type="text" id="config-url" placeholder="URL of JSON Configuration" value="https://raw.githubusercontent.com/jwbarcodescanner/scanner/refs/heads/main/config.json">
+    <button id="load-data" class="btn-secondary">Download & Sync Data</button>
     <div id="load-status"></div>
   </div>
 
@@ -105,14 +110,12 @@
         
         if (lastRefresh) {
           const now = Date.now();
-          const twentyFourHours = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+          const twentyFourHours = 24 * 60 * 60 * 1000; 
           
           if (now - lastRefresh > twentyFourHours) {
-            // Data is too old. Clear it and warn the user.
             await clearDB();
             loadStatus.innerHTML = `<div class="warning">⚠️ Stored data was over 24 hours old and has been cleared to prevent errors. Please download fresh data.</div>`;
           } else {
-            // Data is still valid. Give a helpful status update.
             const hoursOld = Math.floor((now - lastRefresh) / (1000 * 60 * 60));
             const minutesOld = Math.floor(((now - lastRefresh) % (1000 * 60 * 60)) / (1000 * 60));
             loadStatus.style.color = "green";
@@ -124,63 +127,133 @@
       }
     }
 
-    // Run the expiry check immediately when the app opens
     window.addEventListener('DOMContentLoaded', checkDataAge);
     // --------------------------------------------------
 
     const loadBtn = document.getElementById('load-data');
-    const urlInput = document.getElementById('data-url');
+    const urlInput = document.getElementById('config-url');
     const loadStatus = document.getElementById('load-status');
 
     loadBtn.addEventListener('click', async () => {
       await clearDB();
-      
-      loadStatus.className = ""; // Remove any warning classes
+      loadStatus.className = "";
       loadStatus.style.color = "#333";
-      loadStatus.innerText = "Fetching and parsing new data...";
+      loadStatus.innerText = "Fetch config and parsing new data...";
       
+      const unifiedData = {};
+      const unifiedHeaders = [];
+
       try {
-        const response = await fetch(urlInput.value);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const htmlString = await response.text();
+        // --- STEP 1: FETCH CONFIG JSON ---
+        const configResponse = await fetch(urlInput.value);
+        if (!configResponse.ok) throw new Error(`HTTP error fetching config! Status: ${configResponse.status}`);
+        const config = await configResponse.json();
 
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(htmlString, 'text/html');
-        const rows = doc.querySelectorAll('table tr');
-        
-        if (rows.length === 0) throw new Error("No table rows found on the page.");
+        const dataLink = config.link;
+        const dataType = config.type ? config.type.toUpperCase() : null;
 
-        const headers = [];
-        const headerCells = rows[0].querySelectorAll('th, td');
-        headerCells.forEach(cell => {
-          headers.push(cell.textContent.trim());
-        });
-        
-        const offlineData = {};
-        let count = 0;
+        if (!dataLink || !dataType) throw new Error("Invalid Configuration JSON: 'link' or 'type' missing.");
 
-        for (let r = 1; r < rows.length; r++) {
-          const cells = rows[r].querySelectorAll('td');
-          if (cells.length === 0) continue; 
+        loadStatus.innerText = `Fetch ${dataType} data from ${dataLink}...`;
 
-          const barcode = cells[0].textContent.trim();
-          const rowData = [];
-          
-          for (let i = 1; i < cells.length; i++) {
-            rowData.push(cells[i].textContent.trim());
-          }
-          
-          offlineData[barcode] = rowData;
-          count++;
+        // --- STEP 2: FETCH & PARSE DATA BASED ON TYPE ---
+        const dataResponse = await fetch(dataLink);
+        if (!dataResponse.ok) throw new Error(`HTTP error fetching data! Status: ${dataResponse.status}`);
+
+        switch (dataType) {
+          // --- PARSE HTML ---
+          case 'HTML':
+          case 'HTML TABLE':
+            const htmlString = await dataResponse.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlString, 'text/html');
+            const rows = doc.querySelectorAll('table tr');
+            if (rows.length === 0) throw new Error("No table rows found on HTML page.");
+            
+            // headers
+            const headerCells = rows[0].querySelectorAll('th, td');
+            headerCells.forEach(cell => unifiedHeaders.push(cell.textContent.trim()));
+            
+            // data
+            for (let r = 1; r < rows.length; r++) {
+              const cells = rows[r].querySelectorAll('td');
+              if (cells.length === 0) continue; 
+              const barcode = cells[0].textContent.trim();
+              const rowData = [];
+              for (let i = 1; i < cells.length; i++) {
+                rowData.push(cells[i].textContent.trim());
+              }
+              unifiedData[barcode] = rowData;
+            }
+            break;
+
+          // --- PARSE CSV ---
+          case 'CSV':
+            const csvString = await dataResponse.text();
+            // Use PapaParse (header: false lets us extract headers ourselves to match HTML logic)
+            const csvResults = Papa.parse(csvString, {header: false, skipEmptyLines: true});
+            if (csvResults.data.length === 0) throw new Error("No data rows found in CSV.");
+
+            // headers
+            unifiedHeaders.push(...csvResults.data[0].map(h => h.trim()));
+
+            // data
+            for (let r = 1; r < csvResults.data.length; r++) {
+              const csvRow = csvResults.data[r];
+              if (csvRow.length === 0) continue;
+              const barcode = csvRow[0].trim();
+              const rowData = [];
+              for (let i = 1; i < csvRow.length; i++) {
+                rowData.push(csvRow[i].trim());
+              }
+              unifiedData[barcode] = rowData;
+            }
+            break;
+
+          // --- PARSE XLSX ---
+          case 'XLSX':
+          case 'EXCEL':
+            // SheetsJS handles binary array buffers
+            const dataArrayBuffer = await dataResponse.arrayBuffer();
+            const workbook = XLSX.read(dataArrayBuffer, {type: 'buffer'});
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            // Get raw rows including the header
+            const excelRows = XLSX.utils.sheet_to_json(worksheet, {header: 1, skipEmptyLines: true});
+            if (excelRows.length === 0) throw new Error("No data rows found in Excel sheet.");
+
+            // headers
+            unifiedHeaders.push(...excelRows[0].map(h => h.trim()));
+
+            // data
+            for (let r = 1; r < excelRows.length; r++) {
+              const excelRow = excelRows[r];
+              if (excelRow.length === 0) continue;
+              const barcode = String(excelRow[0]).trim(); // ensuring barcode is treated as string
+              const rowData = [];
+              // Start from i=1 for SKU/Desc/etc. (Excel index 1 is column B)
+              for (let i = 1; i < excelHeaders.length; i++) {
+                // If a cell is missing in Excel, result is undefined; replace with empty string
+                rowData.push(excelRow[i] ? String(excelRow[i]).trim() : "");
+              }
+              unifiedData[barcode] = rowData;
+            }
+            break;
+
+          default:
+            throw new Error(`Unsupported data type in configuration: ${dataType}`);
         }
 
-        // Save data, headers, AND the current timestamp
-        await setItemDB('offlineBarcodeData', offlineData);
-        await setItemDB('offlineHeaders', headers);
+        const count = Object.keys(unifiedData).length;
+        if (count === 0) throw new Error("No barcode entries successfully parsed.");
+
+        // Save unified output to IndexedDB
+        await setItemDB('offlineBarcodeData', unifiedData);
+        await setItemDB('offlineHeaders', unifiedHeaders);
         await setItemDB('lastRefreshTime', Date.now());
         
         loadStatus.style.color = "green";
-        loadStatus.innerText = `Success! Saved ${count} items. Valid for 24 hours.`;
+        loadStatus.innerText = `Success! Saved ${count} items from ${dataType}. Valid for 24 hours.`;
       } catch (error) {
         loadStatus.style.color = "red";
         loadStatus.innerText = `Error loading data: ${error.message}`;
@@ -197,15 +270,14 @@
       resultDiv.style.display = 'none';
       startBtn.style.display = 'none';
 
+      // --- DYNAMIC RECTANGULAR SCANNER SETUP ---
       html5QrcodeScanner = new Html5QrcodeScanner(
         "reader", 
         { 
           fps: 10, 
-          // Instead of hardcoding, calculate based on screen/video dimensions
+          // Use rectangular viewfinder for 1D barcodes
           qrbox: (viewfinderWidth, viewfinderHeight) => {
-            // Make the scanning box 90% as wide as the camera feed
             const boxWidth = Math.floor(viewfinderWidth * 0.9);
-            // Make the height exactly 50% of the width (creates a rectangle)
             const boxHeight = Math.floor(boxWidth * 0.5);
             return { width: boxWidth, height: boxHeight };
           }
@@ -235,24 +307,31 @@
       let matchFound = false;
       let matchedBarcode = decodedText;
 
+      // Primary Lookup
       if (offlineData[decodedText]) {
         matchFound = true;
-      } else if (decodedText.startsWith('0')) {
-        const alternateBarcode = decodedText.substring(1);
+      } 
+      // Fallback Lookup (convert leading '0' to '1')
+      else if (decodedText.startsWith('0')) {
+        const alternateBarcode = '1' + decodedText.substring(1);
         if (offlineData[alternateBarcode]) {
           matchFound = true;
           matchedBarcode = alternateBarcode;
-          resultDiv.innerHTML += `<p><em>Note: Match found by dropping leading 0</em></p>`;
+          resultDiv.innerHTML += `<p><em>Note: Match found by converting leading 0 to 1.</em></p>`;
         }
       }
 
       if (matchFound) {
+        // Vibrate once on success
         if (navigator.vibrate) navigator.vibrate(200);
 
         const rowData = offlineData[matchedBarcode];
         
+        // Dynamically build the results using saved headers
         let rowHTML = `<ul>`;
         rowData.forEach((dataValue, index) => {
+          // Headers index 0 is the 'Barcode' column itself.
+          // index=0 of stored rowData corresponds to headers[1] (SKU), etc.
           const label = headers[index + 1] || `Column ${index + 2}`;
           rowHTML += `<li><strong>${label}:</strong> ${dataValue}</li>`;
         });
@@ -263,6 +342,7 @@
           ${rowHTML}
         `;
       } else {
+        // Vibrate twice (vibrate, pause, vibrate) on failure
         if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
         resultDiv.innerHTML += `<p style="color: red;">Barcode not found in offline database.</p>`;
       }
